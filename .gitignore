@@ -1,0 +1,15 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.pytest_cache/
+.ipynb_checkpoints/
+
+# Local agent / tooling state
+.omc/
+.omx/
+
+# Heavy artifacts (excluded from this code-only repo)
+ckpt_ssl_lora/
+docs/figures/
