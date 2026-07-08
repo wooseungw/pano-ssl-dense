@@ -37,6 +37,33 @@ def render_coordmap(erp_h: int, erp_w: int, yaw_deg: float, pitch_deg: float,
     return cmap[..., :2]
 
 
+def tile_position_labels(erp_h: int, erp_w: int, yaw_deg: float, pitch_deg: float,
+                         hfov_deg: float, out_size: int, patch: int
+                         ) -> Tuple[np.ndarray, np.ndarray, float, float]:
+    """Per-patch spherical POSITION labels for the PWW pretext (docs/PANO_WHEREWHAT_SPEC.md).
+
+    Derived (free, exact) from the render-time coordinate map: each patch-centre's ERP (x, y)
+    -> gravity-referenced latitude and tile-relative longitude.
+
+    Well-posedness: latitude is ABSOLUTE (ERP row is gravity-locked); longitude is a free gauge
+    (roll), so we return longitude RELATIVE to the tile centre only — never absolute longitude.
+
+    Returns (patch_lat (Gh,Gw) deg, patch_dlon (Gh,Gw) deg relative-to-centre,
+             centre_lat float deg, hfov float deg). Gh=Gw=out_size//patch.
+    """
+    cmap = render_coordmap(erp_h, erp_w, yaw_deg, pitch_deg, hfov_deg, out_size)   # (out,out,2)=(x,y)
+    grid_n = out_size // patch
+    half = patch // 2
+    gi, gj = np.mgrid[0:grid_n, 0:grid_n]
+    xy = cmap[gi * patch + half, gj * patch + half]                                # (Gh,Gw,2)
+    lat = 90.0 - (xy[..., 1] + 0.5) / erp_h * 180.0                                # absolute latitude
+    lon = (xy[..., 0] + 0.5) / erp_w * 360.0 - 180.0
+    centre_lon = lon[grid_n // 2, grid_n // 2]
+    dlon = (lon - centre_lon + 180.0) % 360.0 - 180.0                              # wrap-safe, seam-safe
+    return (lat.astype(np.float32), dlon.astype(np.float32),
+            float(lat[grid_n // 2, grid_n // 2]), float(hfov_deg))
+
+
 @dataclass(frozen=True)
 class WarpField:
     """Geometry-only (image-independent) correspondence from tile A -> tile B features.

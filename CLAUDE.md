@@ -1,8 +1,8 @@
-# CLAUDE.md
 
-Behavioral guidelines to reduce common LLM coding mistakes. Merge with project-specific instructions as needed.
+## 0. 기존의 코드를 최대한 활용할것
 
-**Tradeoff:** These guidelines bias toward caution over speed. For trivial tasks, use judgment.
+**불필요하게 같은 역할을 하는 함수를 반복적으로 생산하지 마십시오.**
+
 
 ## 1. Think Before Coding
 

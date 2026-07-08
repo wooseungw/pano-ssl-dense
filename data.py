@@ -15,7 +15,7 @@ import glob
 import os
 from typing import List, Optional, Tuple
 
-ROOT = "/data/1_personal/4_SWWOO"
+ROOT = os.environ.get("PANO_DATA_ROOT", "/mnt/data-hdd/datasets/pano-ssl")
 
 # Stanford2D3D pano modality file-suffix per modality (same stem, different suffix/ext).
 S2D3D_SUFFIX = {

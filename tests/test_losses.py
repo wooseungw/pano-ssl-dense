@@ -61,6 +61,65 @@ def test_distill_zero_on_identity():
     assert token.item() < 1e-5 and rel.item() < 1e-5
 
 
+def test_sinkhorn_rows_sum_to_one_and_balanced():
+    """Q rows are distributions; column (prototype) usage is balanced ~1/K."""
+    torch.manual_seed(3)
+    scores = torch.randn(256, 16)
+    q = L.sinkhorn(scores)
+    assert torch.allclose(q.sum(1), torch.ones(256), atol=1e-3)
+    usage = q.mean(0)
+    # 3-iter sinkhorn is APPROXIMATELY balanced (SwAV standard): what matters for
+    # anti-collapse is that no prototype hoards or fully starves, not exact 1/K.
+    assert usage.max().item() < 3.0 / 16, f"prototype hoards mass: {usage.max().item()}"
+    assert usage.min().item() > 1.0 / (8.0 * 16), f"prototype starves: {usage.min().item()}"
+
+
+def test_sinkhorn_shift_invariant():
+    """A global score offset must not change the assignment (max-shift safety)."""
+    torch.manual_seed(4)
+    scores = torch.randn(64, 8)
+    assert torch.allclose(L.sinkhorn(scores), L.sinkhorn(scores + 100.0), atol=1e-4)
+
+
+def _onehot_codes(classes: torch.Tensor, k: int, scale: float = 10.0) -> torch.Tensor:
+    """(gh,gw) int -> (1,K,gh,gw) strong one-hot logits."""
+    gh, gw = classes.shape
+    z = torch.zeros(1, k, gh, gw)
+    z.scatter_(1, classes.view(1, 1, gh, gw), scale)
+    return z
+
+
+def test_code_swap_loss_low_on_matching_codes_high_on_mismatch():
+    """Identical codes at identity correspondence -> ~0; shifted codes -> large."""
+    torch.manual_seed(5)
+    k, gh = 8, 8
+    classes = torch.randint(0, k, (gh, gh))
+    logits = _onehot_codes(classes, k)
+    q_same = torch.softmax(_onehot_codes(classes, k) * 10.0, dim=1)      # ~one-hot target
+    q_diff = torch.softmax(_onehot_codes((classes + 1) % k, k) * 10.0, dim=1)
+    grid = _identity_grid(gh, gh)
+    valid = torch.ones(gh * gh, dtype=torch.bool)
+    weight = torch.ones(gh * gh)
+    lo = L.code_swap_loss(logits, q_same, grid, valid, weight)
+    hi = L.code_swap_loss(logits, q_diff, grid, valid, weight)
+    assert lo.item() < 0.1, f"matching codes should give ~0 CE, got {lo.item()}"
+    assert hi.item() > 10.0, f"mismatched codes should give large CE, got {hi.item()}"
+
+
+def test_code_swap_loss_backprops_and_respects_stopgrad():
+    """Gradient flows to the student logits, never to the target codes."""
+    torch.manual_seed(6)
+    logits = torch.randn(1, 8, 8, 8, requires_grad=True)
+    q = torch.softmax(torch.randn(1, 8, 8, 8), dim=1).requires_grad_(True)
+    grid = _identity_grid(8, 8)
+    valid = torch.ones(64, dtype=torch.bool)
+    weight = torch.ones(64)
+    loss = L.code_swap_loss(logits, q, grid, valid, weight)
+    loss.backward()
+    assert torch.isfinite(loss) and logits.grad is not None
+    assert q.grad is None, "target codes must be stop-grad"
+
+
 def test_combined_loss_runs_and_backprops():
     torch.manual_seed(2)
     sa = torch.randn(2, 16, 8, 8, requires_grad=True)

@@ -25,7 +25,7 @@ import train_ssl as T  # noqa: E402
 from encoder import PanoEncoder, normalize_tiles  # noqa: E402
 
 DEVICE = P.DEVICE
-CKPT = T.CKPT
+CKPT = os.environ.get("ADAPTER", T.CKPT)
 EVAL = {"outdoor": ("densepass", "out", 50.0), "indoor": ("stanford2d3d", "in", 65.0)}
 
 
@@ -93,6 +93,9 @@ def main():
     print(f"{'domain':8s} {'enc':7s} {'corr':>6} {'rand':>6} {'lift':>6} {'ret@1':>6} {'sem@1':>6}", flush=True)
     for name, (ds, kind, _) in EVAL.items():
         cache = val_cache(ds, kind)
+        if not cache:
+            print(f"{name:8s} skipped (no val panos on disk)", flush=True)
+            continue
         geom = geoms[kind]
         for tag, enc in [("frozen", frozen), ("LoRA", lora)]:
             P.enc_patch = enc.patch

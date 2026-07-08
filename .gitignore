@@ -4,12 +4,20 @@ __pycache__/
 *$py.class
 *.egg-info/
 .pytest_cache/
+.ruff_cache/
 .ipynb_checkpoints/
 
 # Local agent / tooling state
 .omc/
 .omx/
 
-# Heavy artifacts (excluded from this code-only repo)
-ckpt_ssl_lora/
+# Heavy artifacts and experiment outputs (excluded from this code-only repo)
+ckpt_*
+ckpt_*/
+*.ckpt
+*.pt
+*.pth
+*.safetensors
 docs/figures/
+logs/
+runs/

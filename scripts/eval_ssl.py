@@ -24,7 +24,8 @@ import probe_seg_dinov3 as P  # noqa: E402
 import diag_seam as D  # noqa: E402
 from encoder import PanoEncoder  # noqa: E402
 
-CKPT = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "ckpt_ssl_lora")
+CKPT = os.environ.get("ADAPTER", os.path.join(
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "runs", "ckpt_ssl_lora"))
 EVAL = [("densepass", 50.0), ("stanford2d3d", 65.0)]
 DEVICE = P.DEVICE
 
@@ -62,6 +63,9 @@ def main():
         panos, _, train = P.grouped()
         cache_tr = [P.load_rgb_label(f) for g, f in panos if g in train]
         cache_va = [P.load_rgb_label(f) for g, f in panos if g not in train]
+        if not cache_va:
+            print(f"{ds:13s} skipped (no val panos on disk)\n", flush=True)
+            continue
         res = {}
         for tag, enc in [("frozen", frozen), ("LoRA", lora)]:
             res[tag] = encoder_metrics(enc, cache_tr, cache_va, plan)

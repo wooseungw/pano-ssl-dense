@@ -1,4 +1,4 @@
-"""Per-task eval of the COMMON SSL encoder (ckpt_ssl_lora, FIXED) vs frozen, paired with a
+"""Per-task eval of the COMMON SSL encoder (runs/ckpt_ssl_lora, FIXED) vs frozen, paired with a
 ZOO of decoder heads drawn from real SOTA models (not DPT):
   Linear  - Segmenter-Linear / SETR-Naive  (1x1 conv -> upsample)
   PUP     - SETR-PUP                        (progressive conv upsampling)
@@ -31,10 +31,13 @@ import probe_normal as PN  # noqa: E402
 from encoder import PanoEncoder, normalize_tiles  # noqa: E402
 
 DEVICE = P.DEVICE
-TILE, HFOV, SEED, GH = 512, 65.0, 0, 128
+TILE, HFOV, GH = 512, 65.0, 128
+SEED = int(os.environ.get("SEED", 0))                     # multi-seed the decoder init/order to expose noise floor
 EPOCHS = int(os.environ.get("EPOCHS", 15))
 TR, VA = int(os.environ.get("TR", 80)), int(os.environ.get("VA", 30))
 LOG125 = math.log(1.25)
+SSL_CKPT = os.environ.get("SSL_CKPT", T.CKPT)              # default geo ckpt; override to runs/ckpt_ssl_tc3
+SSL_TAG = (os.path.basename(SSL_CKPT).replace("ckpt_ssl_", "").replace("ckpt_", "") or "SSL")[:8]
 
 
 # ----------------------------------------------------------------- decoder zoo
@@ -97,6 +100,10 @@ class Mask(nn.Module):                                     # Segmenter-Mask / Ma
 ZOO = {"Linear": Linear, "PUP": PUP, "UPerNet": UPerNet, "Mask": Mask}
 TASK_DECODERS = {"seg": ["Linear", "PUP", "UPerNet", "Mask"],
                  "normal": ["Linear", "PUP", "UPerNet"], "depth": ["Linear", "PUP", "UPerNet"]}
+_only = os.environ.get("ONLY_HEADS")                      # e.g. ONLY_HEADS=Linear -> no-finetune probe only
+if _only:
+    keep = set(_only.split(","))
+    TASK_DECODERS = {t: [h for h in ds if h in keep] for t, ds in TASK_DECODERS.items()}
 OUT_CH = {"seg": None, "normal": 3, "depth": 1}            # seg set at runtime
 
 
@@ -138,11 +145,11 @@ def loss_of(task, out, gts):
     return F.l1_loss(out[:, 0][m], y[m]) if m.any() else None
 
 
-def train_eval(task, name, dim, ctr, cva):
+def train_eval(task, name, dim, ctr, cva, seed=SEED):
     c = P.N_CLASS if task == "seg" else OUT_CH[task]
-    torch.manual_seed(SEED); dec = ZOO[name](dim, c).to(DEVICE)
+    torch.manual_seed(seed); dec = ZOO[name](dim, c).to(DEVICE)
     opt = torch.optim.AdamW(dec.parameters(), 1e-3, weight_decay=1e-4)
-    g = torch.Generator().manual_seed(SEED)
+    g = torch.Generator().manual_seed(seed)
     for _ in range(EPOCHS):
         for i in torch.randperm(len(ctr), generator=g).tolist():
             feats, gts = ctr[i]; opt.zero_grad()
@@ -182,34 +189,48 @@ def evaluate(task, dec, cva):
     return (err / max(n, 1), dac / max(n, 1))
 
 
+SEEDS = [int(s) for s in os.environ.get("SEEDS", str(SEED)).split(",")]
+
+
+def _ms(xs):
+    m = sum(xs) / len(xs)
+    s = (sum((x - m) ** 2 for x in xs) / len(xs)) ** 0.5 if len(xs) > 1 else 0.0
+    return m, s
+
+
 def main():
     P.configure("stanford2d3d"); P.TILE = TILE
     P.plan = P.a2p.plan_tiles("band", HFOV, HFOV, 0.25, pmax_deg=45.0)
     files = data.list_erps("stanford2d3d")
     def area(f): return f.split("extracted_data/")[1].split("/")[0]
     tr = [f for f in files if "5" not in area(f)][:TR]; va = [f for f in files if "5" in area(f)][:VA]
-    print(f"multitask × decoder-zoo: common SSL encoder vs frozen (encoder FIXED) | tr={len(tr)} va={len(va)} ep={EPOCHS}\n", flush=True)
-    res = {}
-    for tag, kw in [("frozen", dict(lora_rank=0)), ("SSL-LoRA", dict(adapter_path=T.CKPT))]:
+    print(f"multitask × decoder-zoo: {SSL_TAG} vs frozen (encoder FIXED) | tr={len(tr)} va={len(va)} "
+          f"ep={EPOCHS} seeds={SEEDS}\n", flush=True)
+    res = {}                                                 # (tag,task,name) -> list over seeds
+    for tag, kw in [("frozen", dict(lora_rank=0)), (SSL_TAG, dict(adapter_path=SSL_CKPT))]:
         enc = PanoEncoder(model_id=P.MODEL, **kw).to(DEVICE).eval(); P.enc_patch = enc.patch
-        ctr = [encode_pano(enc, f) for f in tr]; cva = [encode_pano(enc, f) for f in va]
+        ctr = [encode_pano(enc, f) for f in tr]; cva = [encode_pano(enc, f) for f in va]  # encode ONCE
         for task, decs in TASK_DECODERS.items():
             for name in decs:
-                res[(tag, task, name)] = train_eval(task, name, enc.dim, ctr, cva)
-                print(f"  [{tag}] {task:6s} {name:8s} -> {res[(tag, task, name)]}", flush=True)
+                vals = [train_eval(task, name, enc.dim, ctr, cva, sd) for sd in SEEDS]
+                res[(tag, task, name)] = vals
+                print(f"  [{tag}] {task:6s} {name:8s} -> {vals}", flush=True)
         del enc, ctr, cva; torch.cuda.empty_cache()
 
-    print("\n=== PER-TASK × DECODER: frozen vs common SSL encoder ===")
+    print(f"\n=== PER-TASK × DECODER: frozen vs {SSL_TAG}  (mean±std over {len(SEEDS)} seeds) ===")
     for task, decs in TASK_DECODERS.items():
         unit = {"seg": "mIoU↑", "normal": "ang°↓", "depth": "|Δlog|↓ / δ↑"}[task]
-        print(f"\n[{task}]  ({unit})\n{'decoder':9s} {'frozen':>16} {'SSL-LoRA':>16} {'Δ':>10}")
+        print(f"\n[{task}]  ({unit})\n{'decoder':9s} {'frozen':>18} {SSL_TAG:>18} {'Δ(mean)':>10}")
         for name in decs:
-            f, l = res[("frozen", task, name)], res[("SSL-LoRA", task, name)]
             if task == "depth":
-                print(f"{name:9s} {f[0]:7.3f}/{f[1]:.2f}   {l[0]:7.3f}/{l[1]:.2f}   {l[0]-f[0]:+.3f}/{l[1]-f[1]:+.2f}")
+                fm, fs = _ms([v[0] for v in res[("frozen", task, name)]])
+                lm, ls = _ms([v[0] for v in res[(SSL_TAG, task, name)]])
+                fdm, _ = _ms([v[1] for v in res[("frozen", task, name)]])
+                ldm, _ = _ms([v[1] for v in res[(SSL_TAG, task, name)]])
+                print(f"{name:9s} {fm:.3f}±{fs:.3f}/{fdm:.2f}  {lm:.3f}±{ls:.3f}/{ldm:.2f}  {lm-fm:+.3f}")
             else:
-                d = l - f
-                print(f"{name:9s} {f:16.3f} {l:16.3f} {d:+10.3f}")
+                fm, fs = _ms(res[("frozen", task, name)]); lm, ls = _ms(res[(SSL_TAG, task, name)])
+                print(f"{name:9s} {fm:8.3f}±{fs:.3f}   {lm:8.3f}±{ls:.3f}   {lm-fm:+10.3f}")
 
 
 if __name__ == "__main__":
