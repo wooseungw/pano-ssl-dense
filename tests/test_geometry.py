@@ -125,6 +125,27 @@ def test_warpfield_is_geometry_only_and_valid():
     assert (wf.weight > 0).all() and (wf.weight <= 1.0 + 1e-6).all()
 
 
+def test_footprint_safe_warp_is_stricter_and_cycle_consistent():
+    """A complete-patch positive must be a strict subset of centre-only positives."""
+    centre = G.warp_field_from_homography(
+        HFOV, OUT, 0.0, 0.0, 60.0, 0.0, patch=14, footprint=False, erode_px=0.0)
+    safe = G.warp_field_from_homography(
+        HFOV, OUT, 0.0, 0.0, 60.0, 0.0, patch=14, footprint=True, erode_px=1.0)
+    assert safe.valid.sum() > 20
+    assert safe.valid.sum() < centre.valid.sum()
+    assert np.all(~safe.valid | centre.valid)
+    assert safe.grid[safe.valid].min() >= -1.0 and safe.grid[safe.valid].max() <= 1.0
+    assert np.isfinite(safe.weight).all() and (safe.weight > 0).all()
+
+
+def test_footprint_safe_subtoken_warp_shape():
+    wf = G.warp_field_from_homography(
+        HFOV, OUT, 0.0, 0.0, 60.0, 0.0, patch=7, footprint=True)
+    assert wf.grid_hw == (32, 32)
+    assert wf.grid.shape == (32 * 32, 2)
+    assert wf.valid.mean() > 0.05
+
+
 def test_renderer_default_has_seam_overlap():
     """Config-bug fix: default render must wrap 360 so the +/-180 seam has overlapping tiles."""
     from PIL import Image

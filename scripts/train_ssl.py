@@ -87,7 +87,7 @@ def load_erp(f, kind):
 
 
 def render_tiles(erp_np, specs, hfov):
-    ts = [torch.from_numpy(np.asarray(a2p.erp_to_pinhole_tile(erp_np, y, p, hfov, TILE))).float().permute(2, 0, 1) / 255.0
+    ts = [torch.from_numpy(np.array(a2p.erp_to_pinhole_tile(erp_np, y, p, hfov, TILE), copy=True)).float().permute(2, 0, 1) / 255.0
           for (y, p) in specs]
     return torch.stack(ts, 0)
 

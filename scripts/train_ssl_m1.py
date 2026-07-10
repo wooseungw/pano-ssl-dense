@@ -54,7 +54,9 @@ TOK_FLOOR = 0.1                                         # annealed token-distill
 LOG_EVERY = 10 if SMOKE_STEPS else 50                   # smoke runs are short — log densely
 
 
-def build_geometry_bidir(enc: PanoEncoder, hfov: float, pitch_centers) -> dict:
+def build_geometry_bidir(enc: PanoEncoder, hfov: float, pitch_centers,
+                         footprint_safe: bool = False,
+                         sub_patch: int | None = None) -> dict:
     """Same tiles/adjacency as train_ssl.build_geometry, but warp fields in BOTH
     directions per pair (symmetric swapped prediction needs A->B and B->A)."""
     yaws = T.a2p.make_yaw_centers_closed_loop(hfov, T.OVERLAP, start_deg=-180.0)
@@ -69,19 +71,37 @@ def build_geometry_bidir(enc: PanoEncoder, hfov: float, pitch_centers) -> dict:
             pairs.append((idx[(r, c)], idx[(r, (c + 1) % k)]))            # horizontal wrap
             if r + 1 < len(pitch_centers):
                 pairs.append((idx[(r, c)], idx[(r + 1, c)]))              # vertical
-    cmaps = [G.render_coordmap(T.ERP_H, T.ERP_W, y, p, hfov, T.TILE) for (y, p) in specs]
-    warps, kept = [], []
+    cmaps = None
+    if not footprint_safe:
+        cmaps = [G.render_coordmap(T.ERP_H, T.ERP_W, y, p, hfov, T.TILE) for (y, p) in specs]
+    warps, sub_warps, kept = [], [], []
     for (a, b) in pairs:
         for (src, dst) in ((a, b), (b, a)):
-            wf = G.warp_field_from_coordmaps(cmaps[src], cmaps[dst], enc.patch, hfov,
-                                             erp_w=T.ERP_W, dst_stride=3)
+            if footprint_safe:
+                ya, pa = specs[src]
+                yb, pb = specs[dst]
+                wf = G.warp_field_from_homography(
+                    hfov, T.TILE, ya, pa, yb, pb, enc.patch, footprint=True)
+            else:
+                wf = G.warp_field_from_coordmaps(cmaps[src], cmaps[dst], enc.patch, hfov,
+                                                 erp_w=T.ERP_W, dst_stride=3)
             if wf.valid.mean() < 0.05:
                 continue
             warps.append((torch.from_numpy(wf.grid).to(DEVICE),
                           torch.from_numpy(wf.valid).to(DEVICE),
                           torch.from_numpy(wf.weight).to(DEVICE)))
+            if sub_patch is not None:
+                ya, pa = specs[src]
+                yb, pb = specs[dst]
+                swf = G.warp_field_from_homography(
+                    hfov, T.TILE, ya, pa, yb, pb, sub_patch, footprint=True)
+                sub_warps.append((torch.from_numpy(swf.grid).to(DEVICE),
+                                  torch.from_numpy(swf.valid).to(DEVICE),
+                                  torch.from_numpy(swf.weight).to(DEVICE)))
             kept.append((src, dst))
-    return {"specs": specs, "pairs": kept, "warps": warps, "hfov": hfov}
+    return {"specs": specs, "pairs": kept, "warps": warps,
+            "sub_warps": sub_warps, "hfov": hfov,
+            "footprint_safe": footprint_safe}
 
 
 def schedule(step: int, total: int) -> Tuple[float, float, float]:

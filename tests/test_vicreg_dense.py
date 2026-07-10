@@ -5,7 +5,7 @@ from __future__ import annotations
 import torch
 
 import losses as L
-from encoder import Expander
+from encoder import Expander, GeometryHead, GlobalExpander, SubtokenExpander
 
 
 def _identity_grid(gh: int, gw: int) -> torch.Tensor:
@@ -75,3 +75,27 @@ def test_expander_shape_and_backbone_gradient():
     assert z.shape == (3, 24, 8, 8)
     z.sum().backward()
     assert feat.grad is not None
+
+
+def test_vector_vicreg_and_pair_invariance():
+    torch.manual_seed(3)
+    a = torch.randn(16, 32, requires_grad=True)
+    b = a.detach().clone()
+    inv = L.vicreg_pair_invariance(a, b)
+    var, cov = L.vicreg_vc_vectors(torch.cat([a, b], dim=0))
+    assert inv.item() == 0.0 and torch.isfinite(var) and torch.isfinite(cov)
+    (inv + var + cov).backward()
+    assert a.grad is not None
+
+
+def test_global_subtoken_and_geometry_heads():
+    torch.manual_seed(4)
+    feat = torch.randn(6, 32, 8, 8, requires_grad=True)
+    glob = GlobalExpander(32, proj_dim=24, hidden=48)(feat)
+    sub = SubtokenExpander(32, proj_dim=20, hidden=32)(feat)
+    geo = GeometryHead(32)(feat)
+    assert glob.shape == (6, 24)
+    assert sub.shape == (6, 20, 16, 16)
+    assert geo.shape == (6, 4, 8, 8)
+    (glob.mean() + sub.mean() + geo.mean()).backward()
+    assert feat.grad is not None and torch.isfinite(feat.grad).all()

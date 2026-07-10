@@ -81,6 +81,26 @@ def vicreg_vc(z: torch.Tensor, gamma: float = 1.0, eps: float = 1e-4) -> Tuple[t
     return var, off.pow(2).sum() / z.shape[1]            # canonical sum/P (rank guard)
 
 
+def vicreg_vc_vectors(z: torch.Tensor, gamma: float = 1.0,
+                      eps: float = 1e-4) -> Tuple[torch.Tensor, torch.Tensor]:
+    """Canonical VICReg variance/covariance for a batch of vectors ``(N, D)``."""
+    if z.ndim != 2 or z.shape[0] < 2:
+        raise ValueError("vicreg_vc_vectors expects (N,D) with N >= 2")
+    x = z - z.mean(dim=0, keepdim=True)
+    std = torch.sqrt(x.var(dim=0) + eps)
+    var = F.relu(gamma - std).mean()
+    cov = (x.T @ x) / (x.shape[0] - 1)
+    off = cov - torch.diag(torch.diagonal(cov))
+    return var, off.pow(2).sum() / z.shape[1]
+
+
+def vicreg_pair_invariance(z_a: torch.Tensor, z_b: torch.Tensor) -> torch.Tensor:
+    """VICReg invariance for aligned vector batches, with canonical element-wise mean."""
+    if z_a.shape != z_b.shape:
+        raise ValueError(f"paired VICReg shapes differ: {z_a.shape} vs {z_b.shape}")
+    return F.mse_loss(z_a, z_b)
+
+
 def overlap_invariance(z_a: torch.Tensor, z_b: torch.Tensor, grid: torch.Tensor,
                        valid: torch.Tensor, weight: torch.Tensor) -> torch.Tensor:
     """Geometric-robustness INVARIANCE: matched-patch MSE over the E2P overlap (the standard

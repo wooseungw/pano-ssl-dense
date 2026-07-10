@@ -144,6 +144,55 @@ class Expander(nn.Module):
         return x.reshape(b, gh, gw, -1).permute(0, 3, 1, 2)
 
 
+class GlobalExpander(nn.Module):
+    """Project one spatially pooled descriptor per tile for global VICReg.
+
+    Tile descriptors supply many more independent samples than one pooled descriptor per
+    panorama while the paired photometric views retain an exact one-to-one target.
+    """
+
+    def __init__(self, dim: int, proj_dim: int = 256, hidden: int = 512):
+        super().__init__()
+        self.net = nn.Sequential(
+            nn.Linear(dim, hidden), nn.LayerNorm(hidden), nn.GELU(),
+            nn.Linear(hidden, proj_dim))
+
+    def forward(self, feat: torch.Tensor) -> torch.Tensor:
+        return self.net(feat.mean(dim=(2, 3)))
+
+
+class SubtokenExpander(nn.Module):
+    """Learn a 2x dense auxiliary grid from patch tokens for sub-token VICReg.
+
+    This head is discarded downstream. It does not pretend the ViT has native sub-tokens;
+    it creates a supervised high-resolution interpolation path whose gradients still reach
+    the adapted backbone.
+    """
+
+    def __init__(self, dim: int, proj_dim: int = 256, hidden: int = 256):
+        super().__init__()
+        self.pre = nn.Sequential(nn.Conv2d(dim, hidden, 1), nn.GroupNorm(16, hidden), nn.GELU())
+        self.post = nn.Sequential(
+            nn.Conv2d(hidden, hidden, 3, padding=1), nn.GroupNorm(16, hidden), nn.GELU(),
+            nn.Conv2d(hidden, proj_dim, 1))
+
+    def forward(self, feat: torch.Tensor) -> torch.Tensor:
+        x = F.interpolate(self.pre(feat), scale_factor=2, mode="bilinear", align_corners=False)
+        return self.post(x)
+
+
+class GeometryHead(nn.Module):
+    """Auxiliary readout that keeps latitude and tile-relative direction decodable."""
+
+    def __init__(self, dim: int, out_dim: int = 4):
+        super().__init__()
+        self.net = nn.Sequential(
+            nn.Conv2d(dim, 256, 1), nn.GELU(), nn.Conv2d(256, out_dim, 1))
+
+    def forward(self, feat: torch.Tensor) -> torch.Tensor:
+        return self.net(feat)
+
+
 class CrossViewPredictor(nn.Module):
     """Term B (docs/PANO_WHEREWHAT_SPEC.md §3): predict a masked A-patch's feature from the
     overlapping B-tile's evidence at the warp location + A's own (masked) context.

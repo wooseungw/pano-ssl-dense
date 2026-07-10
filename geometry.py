@@ -91,7 +91,9 @@ def _offaxis_cos(px_col: np.ndarray, px_row: np.ndarray, out_size: int, hfov_deg
 
 def warp_field_from_coordmaps(cmap_a: np.ndarray, cmap_b: np.ndarray, patch: int,
                               hfov_deg: float, erp_w: int, thresh_px: float = 4.0,
-                              dst_stride: int = 2) -> WarpField:
+                              dst_stride: int = 2, erode_patches: float = 0.0,
+                              mutual_nearest: bool = False,
+                              confidence_sigma_px: float = 0.0) -> WarpField:
     """Build a feature-level WarpField (A->B) from two coordinate maps. Image-independent.
 
     Match each A patch-center to the nearest B pixel in ERP-coordinate space (x wraps with
@@ -117,10 +119,19 @@ def warp_field_from_coordmaps(cmap_a: np.ndarray, cmap_b: np.ndarray, patch: int
     dy = a_erp[:, None, 1] - b_erp[None, :, 1]
     d = np.sqrt(dx * dx + dy * dy)
     nn = d.argmin(1)
-    valid = d[np.arange(len(a_erp)), nn] < thresh_px
+    match_error = d[np.arange(len(a_erp)), nn]
+    valid = match_error < thresh_px
 
     mb_row = b_row[nn].astype(np.float32)
     mb_col = b_col[nn].astype(np.float32)
+    if erode_patches > 0:
+        margin = float(erode_patches * patch)
+        valid &= ((mb_col >= margin) & (mb_col <= out_size - 1 - margin)
+                  & (mb_row >= margin) & (mb_row <= out_size - 1 - margin))
+    if mutual_nearest:
+        # A centre must also be the nearest A centre to its selected B sample. This removes
+        # many-to-one matches at stretched tile edges without building a second correspondence.
+        valid &= d[:, nn].argmin(axis=0) == np.arange(len(a_erp))
     nx = (mb_col + 0.5) / out_size * 2.0 - 1.0
     ny = (mb_row + 0.5) / out_size * 2.0 - 1.0
     grid = np.stack([nx, ny], axis=-1).astype(np.float32)
@@ -128,6 +139,62 @@ def warp_field_from_coordmaps(cmap_a: np.ndarray, cmap_b: np.ndarray, patch: int
     w_a = _offaxis_cos(a_col.astype(np.float32), a_row.astype(np.float32), out_size, hfov_deg)
     w_b = _offaxis_cos(mb_col, mb_row, out_size, hfov_deg)
     weight = np.minimum(w_a, w_b).astype(np.float32)
+    if confidence_sigma_px > 0:
+        confidence = np.exp(-0.5 * (match_error / confidence_sigma_px) ** 2)
+        weight *= confidence.astype(np.float32)
+
+    return WarpField(grid=grid, valid=valid, weight=weight, grid_hw=(grid_n, grid_n))
+
+
+def warp_field_from_homography(hfov_deg: float, out_size: int,
+                               yaw_a: float, pitch_a: float,
+                               yaw_b: float, pitch_b: float,
+                               patch: int, footprint: bool = True,
+                               erode_px: float = 1.0,
+                               cycle_sigma_px: float = 1.0) -> WarpField:
+    """Build an exact A->B token warp and validate the complete patch footprint.
+
+    Unlike :func:`warp_field_from_coordmaps`, this path is O(number-of-tokens), so it is
+    practical for the 2x sub-token grid. ``footprint=True`` accepts a positive only when
+    all four corners of A's patch project inside B after erosion. The analytic homography
+    is renderer-gated by ``tests/test_geometry.py``.
+    """
+    if patch <= 0 or out_size % patch:
+        raise ValueError("patch must be positive and divide out_size")
+    grid_n = out_size // patch
+    half = patch / 2.0
+    gi, gj = np.mgrid[0:grid_n, 0:grid_n]
+    a_row = ((gi + 0.5) * patch - 0.5).ravel().astype(np.float64)
+    a_col = ((gj + 0.5) * patch - 0.5).ravel().astype(np.float64)
+
+    h_ab = tile_homography(hfov_deg, out_size, yaw_a, pitch_a, yaw_b, pitch_b)
+    b_col, b_row = apply_homography(h_ab, a_col, a_row)
+    valid = (np.isfinite(b_col) & np.isfinite(b_row)
+             & (b_col >= erode_px) & (b_col <= out_size - 1 - erode_px)
+             & (b_row >= erode_px) & (b_row <= out_size - 1 - erode_px))
+
+    if footprint:
+        # Patch edges, not just its centre, must be visible in B. This is the token-level
+        # label contract missing from centre-only correspondence.
+        for dc, dr in ((-half, -half), (half, -half), (-half, half), (half, half)):
+            cc, rr = apply_homography(h_ab, a_col + dc, a_row + dr)
+            valid &= (np.isfinite(cc) & np.isfinite(rr)
+                      & (cc >= erode_px) & (cc <= out_size - 1 - erode_px)
+                      & (rr >= erode_px) & (rr <= out_size - 1 - erode_px))
+
+    nx = (b_col + 0.5) / out_size * 2.0 - 1.0
+    ny = (b_row + 0.5) / out_size * 2.0 - 1.0
+    grid = np.stack([nx, ny], axis=-1).astype(np.float32)
+
+    w_a = _offaxis_cos(a_col.astype(np.float32), a_row.astype(np.float32), out_size, hfov_deg)
+    w_b = _offaxis_cos(b_col.astype(np.float32), b_row.astype(np.float32), out_size, hfov_deg)
+    weight = np.minimum(w_a, w_b).astype(np.float32)
+    if cycle_sigma_px > 0:
+        h_ba = tile_homography(hfov_deg, out_size, yaw_b, pitch_b, yaw_a, pitch_a)
+        ac, ar = apply_homography(h_ba, b_col, b_row)
+        cycle_error = np.sqrt((ac - a_col) ** 2 + (ar - a_row) ** 2)
+        valid &= np.isfinite(cycle_error)
+        weight *= np.exp(-0.5 * (cycle_error / cycle_sigma_px) ** 2).astype(np.float32)
 
     return WarpField(grid=grid, valid=valid, weight=weight, grid_hw=(grid_n, grid_n))
 
