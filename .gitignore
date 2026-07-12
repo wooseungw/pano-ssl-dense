@@ -21,3 +21,9 @@ ckpt_*/
 docs/figures/
 logs/
 runs/
+
+# GJC agent state
+.gjc/
+
+# Scratch logs
+scratchpad/

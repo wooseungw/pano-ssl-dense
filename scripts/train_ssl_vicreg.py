@@ -76,6 +76,7 @@ EARLY_PATIENCE = int(os.environ.get("EARLY_PATIENCE", 5))
 EARLY_MIN_DELTA = float(os.environ.get("EARLY_MIN_DELTA", 1e-3))
 EARLY_EMA_ALPHA = float(os.environ.get("EARLY_EMA_ALPHA", 0.8))
 SAVE_EVERY = int(os.environ.get("SAVE_EVERY", 1))
+RESUME = os.environ.get("RESUME", "")                  # dir with adapter/ + *.pt to continue from
 
 os.environ.setdefault("POOL_PIN", os.path.join(ROOT, "configs", "pool_pin_20260702.tsv"))
 
@@ -205,7 +206,9 @@ def batch_objective(outputs, warm: float):
 
 def main() -> None:
     torch.manual_seed(0)
-    enc = PanoEncoder(model_id=T.MODEL, lora_rank=16).to(DEVICE).train()
+    enc = PanoEncoder(model_id=T.MODEL, lora_rank=16,
+                      adapter_path=(os.path.join(RESUME, "adapter") if RESUME else None),
+                      adapter_trainable=bool(RESUME)).to(DEVICE).train()
     expander = Expander(enc.dim, proj_dim=PROJ_DIM).to(DEVICE).train()
     global_expander = GlobalExpander(enc.dim, proj_dim=GLOBAL_DIM).to(DEVICE).train()
     sub_expander = SubtokenExpander(enc.dim, proj_dim=SUB_DIM).to(DEVICE).train()
@@ -243,6 +246,20 @@ def main() -> None:
 
     aux_params = [p for module in aux_modules for p in module.parameters()]
     opt = torch.optim.AdamW(list(enc.trainable_parameters()) + aux_params, lr=LR)
+
+    start_epoch, resume_step, resume_best_ema, resume_plateau = 0, 0, None, 0
+    if RESUME:
+        aux = torch.load(os.path.join(RESUME, "vicreg_auxiliary.pt"), map_location=DEVICE)
+        expander.load_state_dict(aux["local"])
+        global_expander.load_state_dict(aux["global"])
+        sub_expander.load_state_dict(aux["sub"])
+        geo_head.load_state_dict(aux["geometry"])
+        tr = torch.load(os.path.join(RESUME, "trainer.pt"), map_location=DEVICE)
+        opt.load_state_dict(tr["optimizer"])
+        start_epoch, resume_step = int(tr["epoch"]), int(tr["step"])
+        resume_best_ema, resume_plateau = tr["best_ema"], int(tr["plateau_count"])
+        print(f"RESUME {RESUME}: start_epoch={start_epoch} step={resume_step} "
+              f"best_ema={resume_best_ema} plateau={resume_plateau}", flush=True)
 
     def prep(job):
         entry, sample_id, aug_epoch = job
@@ -458,10 +475,11 @@ def main() -> None:
         plt.close(fig)
         print(f"validation viz -> {epoch_dir}", flush=True)
 
-    step, t0, agg, done, last = 0, time.time(), {}, False, None
-    val_ema, best_ema, plateau_count = None, None, 0
-    pbar = tqdm(total=total_steps, desc="vicreg", mininterval=10, file=sys.stdout, dynamic_ncols=True)
-    for ep in range(EPOCHS):
+    step, t0, agg, done, last = resume_step, time.time(), {}, False, None
+    val_ema, best_ema, plateau_count = resume_best_ema, resume_best_ema, resume_plateau
+    pbar = tqdm(total=total_steps, initial=resume_step, desc="vicreg",
+                mininterval=10, file=sys.stdout, dynamic_ncols=True)
+    for ep in range(start_epoch, EPOCHS):
         if done:
             break
         order = torch.randperm(len(pool), generator=g0).tolist()
@@ -501,7 +519,7 @@ def main() -> None:
                 er = T.erank(last)                          # backbone erank (erosion monitor)
                 msg = " ".join(f"{key}={value/LOG_EVERY:.3f}" for key, value in agg.items())
                 print(f"ep{ep} step{step}/{total_steps} warm={warm:.2f} sem={SEM} erank={er:.1f} "
-                      f"{msg} ({(time.time()-t0)/step:.2f}s/it)", flush=True)
+                      f"{msg} ({(time.time()-t0)/max(1, step-resume_step):.2f}s/it)", flush=True)
                 agg = {}
             if step >= total_steps:
                 done = True
