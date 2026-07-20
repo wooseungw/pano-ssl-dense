@@ -188,7 +188,7 @@ def main():
     tr = [f for f in files if "5" not in area(f)][:TR_PANOS]
     va = [f for f in files if "5" in area(f)][:40]
     print(f"deformable field fusion (fair-retry): field={HF}x{WF} tiles={len(P.plan)} K=4 "
-          f"tr={len(tr)} va={len(va)} ep={EPOCHS}\n{'encoder':8s}  {'naive':>13}   {'deformable':>11}", flush=True)
+          f"tr={len(tr)} va={len(va)} ep={EPOCHS} seed={SEED}\n{'encoder':8s}  {'naive':>13}   {'deformable':>11}", flush=True)
     for tag, kw in [("frozen", dict(lora_rank=0)), ("LoRA", dict(adapter_path=T.CKPT))]:
         enc = PanoEncoder(model_id=P.MODEL, **kw).to(DEVICE).eval()
         run_encoder(tag, enc, tr, va, scatter, refs, covs)

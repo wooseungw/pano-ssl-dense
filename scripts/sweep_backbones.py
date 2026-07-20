@@ -44,15 +44,7 @@ def e2p_feats(enc, rgb, lab, pmax):
 
 def head(Xtr, ytr, Xva, yva, steps=800):
     torch.manual_seed(SEED)
-    clf = torch.nn.Linear(Xtr.shape[1], P.N_CLASS).to(DEVICE)
-    opt = torch.optim.Adam(clf.parameters(), 1e-3, weight_decay=1e-4)
-    lf = torch.nn.CrossEntropyLoss(ignore_index=P.IGNORE)
-    Xtr, ytr = Xtr.to(DEVICE).float(), ytr.to(DEVICE)
-    for _ in range(steps):
-        opt.zero_grad(); lf(clf(Xtr), ytr).backward(); opt.step()
-    with torch.no_grad():
-        pred = clf(Xva.to(DEVICE).float()).argmax(1).cpu()
-    return P.miou_acc(pred, yva)[0]
+    return P.linear_probe(Xtr, ytr, Xva, yva, steps=steps)[0]
 
 
 def run_backbone(model):

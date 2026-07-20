@@ -45,15 +45,7 @@ def e2p_feats(enc, rgb, lab, mode):
 
 def head(Xtr, ytr, Xva, yva, steps=800):
     torch.manual_seed(SEED)
-    clf = torch.nn.Linear(Xtr.shape[1], P.N_CLASS).to(DEVICE)
-    opt = torch.optim.Adam(clf.parameters(), 1e-3, weight_decay=1e-4)
-    lf = torch.nn.CrossEntropyLoss(ignore_index=P.IGNORE)
-    Xtr, ytr = Xtr.to(DEVICE).float(), ytr.to(DEVICE)
-    for _ in range(steps):
-        opt.zero_grad(); lf(clf(Xtr), ytr).backward(); opt.step()
-    with torch.no_grad():
-        pred = clf(Xva.to(DEVICE).float()).argmax(1).cpu()
-    return P.miou_acc(pred, yva)[0]
+    return P.linear_probe(Xtr, ytr, Xva, yva, steps=steps)[0]
 
 
 def collect(enc, kind, cache, n_tr=None, n_va=None):
@@ -84,7 +76,7 @@ def run(ds, enc):
 
 def main():
     enc = PanoEncoder(model_id=P.MODEL, lora_rank=0).to(DEVICE).eval()
-    print(f"hfov={HFOV} overlap={OVERLAP} (DINOv3, patch-matched, seeded)\n"
+    print(f"hfov={HFOV} overlap={OVERLAP} (DINOv3, patch-matched, seeded) seed={SEED}\n"
           f"{'dataset':14s} {'ERP':>7} {'E2P-band':>9} {'E2P-full':>9} {'full-ERP':>9}", flush=True)
     res, dss = {}, ["stanford2d3d", "structured3d"]
     for ds in dss:
