@@ -15,7 +15,11 @@ import glob
 import os
 from typing import List, Optional, Tuple
 
+import numpy as np
+from PIL import Image
+
 ROOT = os.environ.get("PANO_DATA_ROOT", "/mnt/data-hdd/datasets/pano-ssl")
+DEPTH_SCALE = 512.0
 
 # Stanford2D3D pano modality file-suffix per modality (same stem, different suffix/ext).
 S2D3D_SUFFIX = {
@@ -48,6 +52,19 @@ def s2d3d_gt_path(rgb_path: str, modality: str) -> str:
     if not os.path.exists(p):
         raise FileNotFoundError(p)
     return p
+
+
+def load_s2d3d_depth(
+    f: str, hw: Tuple[int, int], cap: float
+) -> Tuple[np.ndarray, np.ndarray]:
+    """ERP depth.png -> (depth_m, valid) at hw=(H,W). Metric meters; valid excludes 0/65535/>cap."""
+    h, w = hw
+    raw = np.array(
+        Image.open(s2d3d_gt_path(f, "depth")).resize((w, h), Image.NEAREST)
+    ).astype(np.float32)
+    d_m = raw / DEPTH_SCALE
+    valid = (raw > 0) & (raw < 65535) & (d_m <= cap)
+    return d_m, valid.astype(np.float32)
 
 
 # --- Structured3D (scale source; depth/normal/semantic GT aligned per room) ---
