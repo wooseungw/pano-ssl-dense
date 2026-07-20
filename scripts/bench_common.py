@@ -31,6 +31,7 @@ import torch.nn.functional as F
 from py360convert import e2p
 
 import anyres_e2p as a2p
+import geometry
 from encoder import PanoEncoder, normalize_tiles
 
 # --------------------------------------------------------------------- config
@@ -190,12 +191,7 @@ def warp_to_grid(arr: np.ndarray, yaw: float, pitch: float, gh: int, gw: int, ch
     Sampling nearest keeps discrete GT (labels, valid masks) exact and does NOT rotate
     vector-valued GT (normals) — so tile-space normals stay in the pano/world frame, which
     is what lets overlapping-tile predictions be averaged without per-tile frame rotation."""
-    w = e2p(arr.astype(np.float32), HFOV, yaw, pitch, out_hw=(TILE, TILE), mode="nearest")
-    if w.ndim == 2:
-        w = w[:, :, None]
-    cy = ((np.arange(gh) + 0.5) * TILE / gh).astype(int)
-    cx = ((np.arange(gw) + 0.5) * TILE / gw).astype(int)
-    return w[np.ix_(cy, cx)].reshape(gh, gw, ch)
+    return geometry.warp_nearest_centers(arr, yaw, pitch, HFOV, TILE, gh, gw)
 
 
 @torch.no_grad()
@@ -281,13 +277,7 @@ def coord_map(yaw: float, pitch: float) -> torch.Tensor:
 
     (u,v) are expressed on a reference 1024x512 ERP; the stitch grid is coarse (SH,SW) so
     tiles fully cover it (coverage-complete), and the assembled field is upsampled later."""
-    uy = np.broadcast_to(np.arange(1024, dtype=np.float32)[None], (512, 1024))
-    vy = np.broadcast_to(np.arange(512, dtype=np.float32)[:, None], (512, 1024))
-    um = e2p(uy[:, :, None], HFOV, yaw, pitch, out_hw=(TILE_OUT, TILE_OUT), mode="nearest")[:, :, 0]
-    vm = e2p(vy[:, :, None], HFOV, yaw, pitch, out_hw=(TILE_OUT, TILE_OUT), mode="nearest")[:, :, 0]
-    uf = np.clip((um / 1024 * SW).astype(int), 0, SW - 1)
-    vf = np.clip((vm / 512 * SH).astype(int), 0, SH - 1)
-    return torch.from_numpy((vf * SW + uf).reshape(-1))
+    return torch.from_numpy(geometry.coord_cell_map(512, 1024, yaw, pitch, HFOV, TILE_OUT, SH, SW))
 
 
 @torch.no_grad()

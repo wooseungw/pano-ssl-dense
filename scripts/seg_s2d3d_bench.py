@@ -34,9 +34,9 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from PIL import Image
-from py360convert import e2p
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+import geometry  # noqa: E402
 import data  # noqa: E402
 import probe_seg_dinov3 as P  # noqa: E402
 import runlog  # noqa: E402
@@ -152,13 +152,7 @@ def build_cache(enc, files, want_lab_full):
 
 def coord_map(yaw, pitch):
     """Each of (TILE_OUT,TILE_OUT) tile pixels -> its STITCH-grid (SH,SW) cell id. Image-independent."""
-    uy = np.broadcast_to(np.arange(1024, dtype=np.float32)[None], (512, 1024))
-    vy = np.broadcast_to(np.arange(512, dtype=np.float32)[:, None], (512, 1024))
-    um = e2p(uy[:, :, None], HFOV, yaw, pitch, out_hw=(TILE_OUT, TILE_OUT), mode="nearest")[:, :, 0]
-    vm = e2p(vy[:, :, None], HFOV, yaw, pitch, out_hw=(TILE_OUT, TILE_OUT), mode="nearest")[:, :, 0]
-    uf = np.clip((um / 1024 * SW).astype(int), 0, SW - 1)
-    vf = np.clip((vm / 512 * SH).astype(int), 0, SH - 1)
-    return torch.from_numpy((vf * SW + uf).reshape(-1))
+    return torch.from_numpy(geometry.coord_cell_map(512, 1024, yaw, pitch, HFOV, TILE_OUT, SH, SW))
 
 
 @torch.no_grad()
