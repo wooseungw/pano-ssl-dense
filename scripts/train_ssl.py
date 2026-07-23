@@ -41,6 +41,10 @@ LR = 1e-4
 LORA_RANK = int(os.environ.get("LORA_RANK", 16))                 # scale LoRA capacity here
 LORA_ALPHA = int(os.environ.get("LORA_ALPHA", 2 * LORA_RANK))    # alpha=2r keeps the update scale as r grows
 LORA_TARGETS = os.environ.get("LORA_TARGETS", "qv")              # "qv" (baseline) or "all" (attn+MLP linears)
+W_DISTILL = float(os.environ.get("W_DISTILL", 1.0))             # frozen-teacher distill weight (0 = PURE SSL: no distill)
+W_REG = float(os.environ.get("W_REG", 1.0))                     # VICReg (var+cov) weight
+GAMMA = float(os.environ.get("GAMMA", 0.04))                   # VICReg var target: 0.04=weak floor (distill-anchored); 1.0=canonical (pure SSL)
+SNAP_EVERY = int(os.environ.get("SNAP_EVERY", 0))              # save adapter snapshot every N epochs (0=off)
 # "modules > rank" (LoRA Learns Less/Forgets Less, arXiv:2405.09673): widening beats deeper rank.
 _LORA_TARGET_SETS = {"qv": None,
                      "all": ["q_proj", "k_proj", "v_proj", "o_proj", "up_proj", "down_proj"]}
@@ -185,7 +189,7 @@ def main():
             g = geom[kind]
             tiles = normalize_tiles(tiles_cpu.to(DEVICE))
             student = enc(tiles)
-            teacher = enc.teacher(tiles)
+            teacher = enc.teacher(tiles) if W_DISTILL > 0 else student.detach()
             w_warp = min(1.0, step / warmup)
             total = 0.0
             npairs = len(g["pairs"])
@@ -196,7 +200,8 @@ def main():
                 # (distill anchor to the full-rank teacher is the primary anti-collapse guard).
                 loss, comps = combined_loss(student[a:a + 1], student[b:b + 1],
                                             teacher[a:a + 1], teacher[b:b + 1], warp,
-                                            w_warp=w_warp, gamma=0.04)
+                                            w_warp=w_warp, w_distill=W_DISTILL, w_reg=W_REG,
+                                            gamma=GAMMA)
                 total = total + loss
                 for kk, vv in comps.items():
                     step_sum[kk] = step_sum.get(kk, 0.0) + vv.item()
@@ -211,6 +216,11 @@ def main():
                 print(f"ep{ep} step{step}/{total_steps} w_warp={w_warp:.2f} erank={er:.1f}/{ert:.1f} {msg} "
                       f"({(time.time()-t0)/step:.2f}s/it ram={ram_avail_gb():.0f}GB)", flush=True)
                 agg = {}
+        if SNAP_EVERY and (ep + 1) % SNAP_EVERY == 0:
+            snap = os.path.join(CKPT, f"ep{ep + 1}")
+            os.makedirs(snap, exist_ok=True)
+            enc.backbone.save_pretrained(snap)
+            print(f"[snap ep{ep + 1}] adapter -> {snap}", flush=True)
 
     os.makedirs(CKPT, exist_ok=True)
     enc.backbone.save_pretrained(CKPT)

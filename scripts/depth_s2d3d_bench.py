@@ -203,7 +203,7 @@ def main() -> None:
     print(f"encoded {len(tr)}+{len(va)} panos ({time.time()-t0:.0f}s)", flush=True)
 
     torch.manual_seed(B.SEED)
-    head = B.DenseHead(enc.dim, 1).to(B.DEVICE)
+    head = B.make_head(enc.dim, 1).to(B.DEVICE)             # DECODER=conv (default) | deform
     train_head(head, ctr)
 
     head.eval()

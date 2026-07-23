@@ -91,8 +91,9 @@ def area_num(f):
 
 
 def build_encoder():
-    enc = (PanoEncoder(model_id=P.MODEL, adapter_path=ADAPTER) if ADAPTER
-           else PanoEncoder(model_id=P.MODEL, lora_rank=0))
+    model_id = os.environ.get("MODEL", P.MODEL)           # backbone swap (parity with bench_common)
+    enc = (PanoEncoder(model_id=model_id, adapter_path=ADAPTER) if ADAPTER
+           else PanoEncoder(model_id=model_id, lora_rank=0))
     return enc.to(DEVICE).eval()                          # frozen: features cached once (decoder-only probe)
 
 
@@ -197,7 +198,9 @@ def main():
     cids = [coord_map(tp.yaw_deg, tp.pitch_deg) for tp in PLAN]
     print(f"encoded {len(tr)}+{len(va)} panos ({time.time()-t0:.0f}s)", flush=True)
 
-    torch.manual_seed(SEED); head = SegHead(enc.dim, P.N_CLASS).to(DEVICE)
+    torch.manual_seed(SEED)
+    head = (nn.Conv2d(enc.dim, P.N_CLASS, 1) if os.environ.get("DECODER") == "linear"
+            else SegHead(enc.dim, P.N_CLASS)).to(DEVICE)
     opt = torch.optim.AdamW(head.parameters(), 1e-3, weight_decay=1e-4)
     lossf = nn.CrossEntropyLoss(ignore_index=P.IGNORE)
     g = torch.Generator().manual_seed(SEED)

@@ -49,6 +49,7 @@ L_KOLEO = float(os.environ.get("L_KOLEO", 0.1))
 EMA_M = float(os.environ.get("EMA_M", 0.996))
 TARGET = os.environ.get("TARGET", "proto")           # "feat"=frozen-feature (I-JEPA/data2vec), "proto"=iBOT prototypes
 SMOKE = int(os.environ.get("SMOKE_STEPS", 0))
+SNAP_EVERY = int(os.environ.get("SNAP_EVERY", 0))    # save adapter snapshot every N epochs (0=off)
 
 
 def build_specs(hfov, pitches):
@@ -176,6 +177,11 @@ def main():
                 agg = {}
             if SMOKE and step >= SMOKE:
                 break
+        if SNAP_EVERY and (ep + 1) % SNAP_EVERY == 0 and not SMOKE:
+            snap = os.path.join(CKPT, f"ep{ep + 1}")
+            os.makedirs(snap, exist_ok=True)
+            enc.backbone.save_pretrained(snap)
+            print(f"[snap ep{ep + 1}] adapter -> {snap}", flush=True)
         if SMOKE and step >= SMOKE:
             break
 

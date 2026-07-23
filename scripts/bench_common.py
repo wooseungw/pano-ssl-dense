@@ -46,6 +46,7 @@ OVERLAP: float = float(os.environ.get("OVERLAP", 0.25))
 EH, EW = (lambda s: (int(s[0]), int(s[1])))(os.environ.get("EVAL_HW", "512,1024").split(","))
 SH, SW = (lambda s: (int(s[0]), int(s[1])))(os.environ.get("STITCH_HW", "128,256").split(","))
 TILE_OUT: int = int(os.environ.get("TILE_OUT", 256))             # per-tile field res for the stitch
+STITCH_W: str = os.environ.get("STITCH_W", "uniform")            # uniform | feather (Hann blend)
 EPOCHS: int = int(os.environ.get("EPOCHS", 20))
 TR_PANOS: int = int(os.environ.get("TR_PANOS", 100000))          # default: full non-test complement
 VA_PANOS: int = int(os.environ.get("VA_PANOS", 100000))          # default: all test panos
@@ -171,8 +172,15 @@ class ThinDeformDecoder(nn.Module):
 
 
 def make_head(d: int, c: int) -> nn.Module:
-    """Decoder factory: DECODER=conv (DenseHead, default) | deform (ThinDeformDecoder)."""
-    return ThinDeformDecoder(d, c) if os.environ.get("DECODER") == "deform" else DenseHead(d, c)
+    """Decoder factory: DECODER=conv (DenseHead, default) | deform (ThinDeformDecoder) |
+    linear (a bare 1x1 conv per-token probe — isolates the ENCODER; a fat decoder can launder
+    depth out of frozen features, a linear probe cannot)."""
+    dec = os.environ.get("DECODER")
+    if dec == "deform":
+        return ThinDeformDecoder(d, c)
+    if dec == "linear":
+        return nn.Conv2d(d, c, 1)
+    return DenseHead(d, c)
 
 
 def render_tiles(rgb: np.ndarray, plan: List[a2p.TilePlan]) -> torch.Tensor:
@@ -290,11 +298,30 @@ def coord_map(yaw: float, pitch: float) -> torch.Tensor:
     return torch.from_numpy((vf * SW + uf).reshape(-1))
 
 
+_FEATHER: torch.Tensor = None
+
+
+def _feather_w() -> torch.Tensor:
+    """(TILE_OUT^2,1) Hann-window blend weights: ~1 at tile center -> ~0 at tile edge, plus a
+    floor so lone-tile cells stay well-defined. Purely GEOMETRIC weighting (obliquity of the
+    tile footprint), NOT error-dependent confidence — orthogonal to the inverse-variance
+    negative (docs/INVVAR_FUSION_LOG.md): each tile's contribution fades out exactly where its
+    footprint ends, so the coverage-count step at footprint boundaries (the stitch seam) vanishes."""
+    global _FEATHER
+    if _FEATHER is None:
+        h = torch.hann_window(TILE_OUT, periodic=False)
+        _FEATHER = (0.05 + 0.95 * torch.outer(h, h)).reshape(-1, 1)
+    return _FEATHER
+
+
 @torch.no_grad()
 def stitch_field(head: nn.Module, feat: torch.Tensor, cids: List[torch.Tensor],
                  out_ch: int) -> Tuple[torch.Tensor, float, np.ndarray]:
-    """Coverage-weighted MEAN stitch of per-tile head fields -> (out_ch,EH,EW) field,
+    """Weighted-MEAN stitch of per-tile head fields -> (out_ch,EH,EW) field,
     coverage fraction, and an (EH,EW) bool covered-mask (cells no tile reached -> False).
+
+    STITCH_W=uniform (default): coverage-count mean — bit-identical to the historical stitch.
+    STITCH_W=feather: Hann tile-center blending (see _feather_w) — seam-free at overlaps.
 
     Every pano tile shares one optical center, so the same ERP direction has one radial depth /
     one world-frame normal across tiles -> averaging overlaps is unbiased (and denoises). Stitch
@@ -303,17 +330,21 @@ def stitch_field(head: nn.Module, feat: torch.Tensor, cids: List[torch.Tensor],
     The covered mask uses the SAME bilinear geometry as the field and a >0.999 threshold, so it
     drops not just uncovered cells but the boundary ring whose bilinear stencil touches one (those
     pixels' field values are pulled toward the uncovered zero -> a directional bias on the metric
-    depth board if scored). Interior pixels have coverage exactly 1.0 and are kept.
+    depth board if scored). Interior pixels have coverage exactly 1.0 and are kept. The covered
+    mask is computed from the UNWEIGHTED count in both modes -> mode comparisons share masks.
     Caller interprets the field per task (depth: exp of channel 0; normal: renormalize)."""
     acc = torch.zeros(SH * SW, out_ch)
+    wsum = torch.zeros(SH * SW, 1)
     cnt = torch.zeros(SH * SW, 1)
+    w = _feather_w() if STITCH_W == "feather" else torch.ones(TILE_OUT * TILE_OUT, 1)
     for ti in range(feat.shape[0]):
         o = head(feat[ti:ti + 1].float().to(DEVICE))                      # (1,C,head_px,head_px)
         o = F.interpolate(o, (TILE_OUT, TILE_OUT), mode="bilinear", align_corners=False)[0]
         flat = o.permute(1, 2, 0).reshape(-1, out_ch).cpu()
-        acc.index_add_(0, cids[ti], flat)
+        acc.index_add_(0, cids[ti], flat * w)
+        wsum.index_add_(0, cids[ti], w)
         cnt.index_add_(0, cids[ti], torch.ones(flat.shape[0], 1))
-    field = (acc / cnt.clamp_min(1.0)).reshape(1, SH, SW, out_ch).permute(0, 3, 1, 2)
+    field = (acc / wsum.clamp_min(1e-6)).reshape(1, SH, SW, out_ch).permute(0, 3, 1, 2)
     field = F.interpolate(field, (EH, EW), mode="bilinear", align_corners=False)
     covered = F.interpolate((cnt.squeeze(1) > 0).float().reshape(1, 1, SH, SW), (EH, EW),
                             mode="bilinear", align_corners=False)[0, 0].numpy() > 0.999

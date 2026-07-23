@@ -76,6 +76,7 @@ EARLY_PATIENCE = int(os.environ.get("EARLY_PATIENCE", 5))
 EARLY_MIN_DELTA = float(os.environ.get("EARLY_MIN_DELTA", 1e-3))
 EARLY_EMA_ALPHA = float(os.environ.get("EARLY_EMA_ALPHA", 0.8))
 SAVE_EVERY = int(os.environ.get("SAVE_EVERY", 1))
+SNAP_EVERY = int(os.environ.get("SNAP_EVERY", 0))      # save runs/<ckpt>/epN/adapter every N epochs (0=off)
 RESUME = os.environ.get("RESUME", "")                  # dir with adapter/ + *.pt to continue from
 
 os.environ.setdefault("POOL_PIN", os.path.join(ROOT, "configs", "pool_pin_20260702.tsv"))
@@ -560,6 +561,8 @@ def main() -> None:
 
         if SAVE_EVERY > 0 and (ep + 1) % SAVE_EVERY == 0:
             save_snapshot("last", ep + 1, best_ema, plateau_count)
+        if SNAP_EVERY and (ep + 1) % SNAP_EVERY == 0:            # per-epoch snapshot for linprobe sweep
+            save_snapshot(f"ep{ep + 1}", ep + 1, best_ema, plateau_count)
         if (EARLY_STOP and step >= warmup and best_ema is not None
                 and plateau_count >= EARLY_PATIENCE):
             print(f"early stop: validation EMA did not improve by {EARLY_MIN_DELTA:.2%} "
