@@ -37,6 +37,37 @@ def render_coordmap(erp_h: int, erp_w: int, yaw_deg: float, pitch_deg: float,
     return cmap[..., :2]
 
 
+def coord_cell_map(erp_h: int, erp_w: int, yaw: float, pitch: float,
+                   hfov: float, out_size: int, stitch_h: int,
+                   stitch_w: int) -> np.ndarray:
+    """Map each rendered tile pixel to its row-major stitch-grid cell id.
+
+    All render and grid parameters are explicit so the mapping is independent of
+    benchmark module configuration.
+    """
+    ux = np.broadcast_to(np.arange(erp_w, dtype=np.float32)[None], (erp_h, erp_w))
+    vy = np.broadcast_to(np.arange(erp_h, dtype=np.float32)[:, None], (erp_h, erp_w))
+    um = py360convert.e2p(ux[:, :, None], hfov, yaw, pitch,
+                         out_hw=(out_size, out_size), mode="nearest")[:, :, 0]
+    vm = py360convert.e2p(vy[:, :, None], hfov, yaw, pitch,
+                         out_hw=(out_size, out_size), mode="nearest")[:, :, 0]
+    uf = np.clip((um / erp_w * stitch_w).astype(int), 0, stitch_w - 1)
+    vf = np.clip((vm / erp_h * stitch_h).astype(int), 0, stitch_h - 1)
+    return (vf * stitch_w + uf).reshape(-1).astype(np.int64, copy=False)
+
+
+def warp_nearest_centers(arr: np.ndarray, yaw: float, pitch: float,
+                         hfov: float, tile: int, gh: int, gw: int) -> np.ndarray:
+    """Nearest-warp an ERP array and sample the centres of a (gh, gw) grid."""
+    warped = py360convert.e2p(arr.astype(np.float32), hfov, yaw, pitch,
+                             out_hw=(tile, tile), mode="nearest")
+    if warped.ndim == 2:
+        warped = warped[:, :, None]
+    cy = ((np.arange(gh) + 0.5) * tile / gh).astype(int)
+    cx = ((np.arange(gw) + 0.5) * tile / gw).astype(int)
+    return warped[np.ix_(cy, cx)].reshape(gh, gw, warped.shape[2])
+
+
 def tile_position_labels(erp_h: int, erp_w: int, yaw_deg: float, pitch_deg: float,
                          hfov_deg: float, out_size: int, patch: int
                          ) -> Tuple[np.ndarray, np.ndarray, float, float]:

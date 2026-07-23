@@ -17,9 +17,9 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 from PIL import Image
-from py360convert import e2p
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+import geometry  # noqa: E402
 import data  # noqa: E402
 import probe_seg_dinov3 as P  # noqa: E402
 import train_ssl as T  # noqa: E402
@@ -43,12 +43,7 @@ def load_rgb_normal(f):
 
 def warp_to_grid(arr, yaw, pitch, hfov, gh, gw, ch):
     """e2p-warp an (H,W,ch) map to a tile then sample patch centers -> (gh,gw,ch)."""
-    w = e2p(arr.astype(np.float32), hfov, yaw, pitch, out_hw=(TILE, TILE), mode="nearest")
-    if w.ndim == 2:
-        w = w[:, :, None]
-    cy = ((np.arange(gh) + 0.5) * TILE / gh).astype(int)
-    cx = ((np.arange(gw) + 0.5) * TILE / gw).astype(int)
-    return w[np.ix_(cy, cx)].reshape(gh, gw, ch)
+    return geometry.warp_nearest_centers(arr, yaw, pitch, hfov, TILE, gh, gw)
 
 
 @torch.no_grad()

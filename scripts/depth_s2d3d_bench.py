@@ -34,7 +34,7 @@ import bench_common as B  # noqa: E402
 import data  # noqa: E402
 import runlog  # noqa: E402
 
-DEPTH_SCALE = 512.0                                             # depth.png unit = 1/512 m
+DEPTH_SCALE = data.DEPTH_SCALE                                  # depth.png unit = 1/512 m
 DEPTH_CAP = float(os.environ.get("DEPTH_CAP", 10.0))           # eval cap (m); poles fall out via valid
 MIN_DEPTH = float(os.environ.get("MIN_DEPTH", 0.1))            # clamp predictions to a sane floor (m)
 
@@ -54,11 +54,7 @@ STAT_KEYS = ("abs", "sq", "se", "sle", "d1", "d2", "d3", "d1si", "n")
 
 def load_depth_m(f: str, hw: Tuple[int, int]) -> Tuple[np.ndarray, np.ndarray]:
     """ERP depth.png -> (depth_m, valid) at hw=(H,W). Metric meters; valid excludes 0/65535/>CAP."""
-    h, w = hw
-    raw = np.array(Image.open(data.s2d3d_gt_path(f, "depth")).resize((w, h), Image.NEAREST)).astype(np.float32)
-    d_m = raw / DEPTH_SCALE
-    valid = (raw > 0) & (raw < 65535) & (d_m <= DEPTH_CAP)
-    return d_m, valid.astype(np.float32)
+    return data.load_s2d3d_depth(f, hw, cap=DEPTH_CAP)
 
 
 def depth_pixel_stats(pred: np.ndarray, gt: np.ndarray, valid: np.ndarray) -> Dict[str, float]:

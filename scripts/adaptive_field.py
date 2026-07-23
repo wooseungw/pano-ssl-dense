@@ -66,15 +66,7 @@ def gt_field(lab, hf, wf, m):
 
 def probe(Xtr, ytr, Xva, yva):
     torch.manual_seed(SEED)
-    clf = torch.nn.Linear(Xtr.shape[1], P.N_CLASS).to(DEVICE)
-    opt = torch.optim.Adam(clf.parameters(), 1e-3, weight_decay=1e-4)
-    lf = torch.nn.CrossEntropyLoss(ignore_index=P.IGNORE)
-    Xtr, ytr = Xtr.to(DEVICE).float(), ytr.to(DEVICE)
-    for _ in range(800):
-        opt.zero_grad(); lf(clf(Xtr), ytr).backward(); opt.step()
-    with torch.no_grad():
-        pred = clf(Xva.to(DEVICE).float()).argmax(1).cpu()
-    return P.miou_acc(pred, yva)[0]
+    return P.linear_probe(Xtr, ytr, Xva, yva)[0]
 
 
 def main():
@@ -84,7 +76,7 @@ def main():
     def area(f): return f.split("extracted_data/")[1].split("/")[0]
     tr_f = [f for f in files if "5" not in area(f)][:70]
     va_f = [f for f in files if "5" in area(f)][:30]
-    print(f"adaptive ERP feature-field: tiles/pano={len(plan)} tr={len(tr_f)} va={len(va_f)}\n"
+    print(f"adaptive ERP feature-field: tiles/pano={len(plan)} tr={len(tr_f)} va={len(va_f)} seed={SEED}\n"
           f"{'encoder':8s} {'naive-field':>12} {'adaptive-field':>15} {'Δ':>7}", flush=True)
 
     for tag, kw in [("frozen", dict(lora_rank=0)), ("LoRA", dict(adapter_path=T.CKPT))]:

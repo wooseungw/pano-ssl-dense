@@ -11,7 +11,6 @@ import sys
 
 import numpy as np
 import torch
-import torch.nn as nn
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import data  # noqa: E402
@@ -25,14 +24,8 @@ RES = [(32, 64), (64, 128), (128, 256)]
 
 def probe(Xtr, ytr, Xva, yva):
     Xtr, ytr = P.subsample(Xtr, ytr, 300000, 0)
-    torch.manual_seed(0); clf = nn.Linear(Xtr.shape[1], P.N_CLASS).to(DEVICE)
-    opt = torch.optim.Adam(clf.parameters(), 1e-3, weight_decay=1e-4)
-    lf = nn.CrossEntropyLoss(ignore_index=P.IGNORE); Xt, yt = Xtr.to(DEVICE).float(), ytr.to(DEVICE)
-    for _ in range(800):
-        opt.zero_grad(); lf(clf(Xt), yt).backward(); opt.step()
-    with torch.no_grad():
-        pr = clf(Xva.to(DEVICE).float()).argmax(1).cpu()
-    return P.miou_acc(pr, yva)[0]
+    torch.manual_seed(0)
+    return P.linear_probe(Xtr, ytr, Xva, yva)[0]
 
 
 def main():
@@ -43,7 +36,7 @@ def main():
     tr = [f for f in files if "5" not in area(f)][:150]
     va = [f for f in files if "5" in area(f)][:40]
     enc = PanoEncoder(model_id=P.MODEL, lora_rank=0).to(DEVICE).eval(); P.enc_patch = enc.patch
-    print(f"field resolution sweep (frozen DINOv3, naive scatter): tr={len(tr)} va={len(va)} tiles={len(plan)}", flush=True)
+    print(f"field resolution sweep (frozen DINOv3, naive scatter): tr={len(tr)} va={len(va)} tiles={len(plan)} seed=0", flush=True)
 
     cache = {"tr": [], "va": []}
     for sp, fl in [("tr", tr), ("va", va)]:
